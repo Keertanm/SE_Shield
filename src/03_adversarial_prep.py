@@ -21,8 +21,7 @@ print("ADVERSARIAL PREPROCESSING — OPTIMIZED + PROGRESS BARS")
 print("=" * 60)
 print("""
 Optimizations:
-  REMOVED  : autocorrect Speller   (was ~3hrs bottleneck)
-  REPLACED : hardcoded dictionary  (covers real attack patterns)
+  KEPT     : autocorrect Speller   
   KEPT     : L33t normalization    (str.translate — fast)
   KEPT     : wordninja splitting   (long tokens only)
   KEPT     : adversarial augmentation on attack class
@@ -33,7 +32,7 @@ Expected runtime: 3-5 minutes on 95k rows
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 print("Loading balanced dataset...")
-df = pd.read_csv(os.path.join(PROCESSED_DIR, 'merged_dataset.csv'))
+df = pd.read_csv(os.path.join(PROCESSED_DIR, 'merged_dataset_v2.csv'))
 print(f"Loaded : {len(df):,} rows  |  "
       f"Attack: {(df['label']==1).sum():,}  "
       f"Legit: {(df['label']==0).sum():,}")

@@ -1,266 +1,332 @@
 import os
 import joblib
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
+import time
 
-from sklearn.metrics import (confusion_matrix, classification_report,
-                             roc_curve, auc)
+from sklearn.metrics import (accuracy_score, precision_score,
+                             recall_score, f1_score,
+                             roc_auc_score, confusion_matrix,
+                             classification_report, roc_curve, auc)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS_DIR  = os.path.join(BASE_DIR, 'models')
+SPLITS_DIR  = os.path.join(BASE_DIR, 'data', 'splits')
 RESULTS_DIR = os.path.join(BASE_DIR, 'results')
-CM_DIR      = os.path.join(RESULTS_DIR, 'confusion_matrices')
-ROC_DIR     = os.path.join(RESULTS_DIR, 'roc_curves')
-os.makedirs(CM_DIR,  exist_ok=True)
-os.makedirs(ROC_DIR, exist_ok=True)
-
-# ── Load results ──────────────────────────────────────────────────────────────
-print("=" * 60)
-print("LOADING RESULTS")
-print("=" * 60)
-
-summary     = joblib.load(os.path.join(MODELS_DIR, 'results_summary.pkl'))
-winner_name = summary['winner_name']
-results     = summary['results']
-y_test      = summary['y_test']
-all_y_pred  = summary['all_y_pred']
-all_y_prob  = summary['all_y_prob']
-
-print(f"Winner : {winner_name}")
-print(f"Models : {list(results.keys())}")
-
-MODEL_COLORS = {
-    'Logistic Regression' : '#3b82f6',
-    'Random Forest'       : '#10b981',
-    'XGBoost'             : '#f59e0b',
-    'SVM'                 : '#ef4444',
-    'Naive Bayes'         : '#8b5cf6',
-}
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(os.path.join(RESULTS_DIR, 'svm'), exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 1 — METRICS COMPARISON BAR CHART
+# STEP 1 — LOAD EVERYTHING
 # ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("PLOT 1 — METRICS COMPARISON")
-print("=" * 60)
+print("=" * 65)
+print("STEP 1 — LOADING MODEL + DATA")
+print("=" * 65)
 
-metrics      = ['accuracy', 'precision', 'recall', 'f1_score', 'roc_auc']
-metric_names = ['Accuracy', 'Precision', 'Recall', 'F1 Score', 'ROC-AUC']
-model_names  = list(results.keys())
+X_test = joblib.load(os.path.join(SPLITS_DIR, 'X_test_tfidf.pkl')).tocsr()
+y_test = joblib.load(os.path.join(SPLITS_DIR, 'y_test.pkl'))
 
-fig, ax = plt.subplots(figsize=(14, 7))
+# Best SVM — LinearSVC baseline (all strategies tied at 98.85%)
+svm_model = joblib.load(os.path.join(MODELS_DIR, 'svm_paper10_baseline.pkl'))
 
-x     = np.arange(len(metrics))
-width = 0.15
-offsets = np.linspace(-(len(model_names)-1)/2, (len(model_names)-1)/2, len(model_names))
-
-for i, (name, offset) in enumerate(zip(model_names, offsets)):
-    values = [results[name][m] * 100 for m in metrics]
-    bars   = ax.bar(x + offset * width, values, width,
-                    label=name, color=MODEL_COLORS[name],
-                    edgecolor='black', linewidth=0.5, alpha=0.85)
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width()/2,
-                bar.get_height() + 0.05,
-                f'{val:.1f}', ha='center', va='bottom',
-                fontsize=6.5, rotation=90)
-
-ax.set_xlabel('Metric', fontsize=13)
-ax.set_ylabel('Score (%)', fontsize=13)
-ax.set_title('Model Comparison — All Metrics', fontsize=15, fontweight='bold')
-ax.set_xticks(x)
-ax.set_xticklabels(metric_names, fontsize=12)
-ax.set_ylim(90, 102)
-ax.legend(fontsize=10)
-ax.grid(axis='y', alpha=0.3)
-
-plt.tight_layout()
-plt.savefig(os.path.join(RESULTS_DIR, 'metrics_comparison.png'), dpi=150)
-plt.show()
-print("Saved → results/metrics_comparison.png")
+print(f"SVM model : svm_paper10_baseline.pkl  (LinearSVC, default)")
+print(f"X_test    : {X_test.shape}")
+print(f"y_test    : Attack={y_test.sum():,}  Legit={(y_test==0).sum():,}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 2 — CONFUSION MATRICES (all 5 in one figure)
+# STEP 2 — SVM PREDICTIONS
 # ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("PLOT 2 — CONFUSION MATRICES")
-print("=" * 60)
+print("\n" + "=" * 65)
+print("STEP 2 — SVM PREDICTIONS")
+print("=" * 65)
 
-fig, axes = plt.subplots(1, 5, figsize=(22, 5))
+t0       = time.time()
+svm_pred = svm_model.predict(X_test)
+svm_prob = svm_model.predict_proba(X_test)[:, 1]
+svm_time = (time.time() - t0) * 1000 / len(y_test)
 
-for ax, (name, y_pred) in zip(axes, all_y_pred.items()):
-    cm = confusion_matrix(y_test, y_pred)
-    sns.heatmap(
-        cm, annot=True, fmt='d', ax=ax,
-        cmap='Blues', linewidths=0.5,
-        xticklabels=['Legit', 'Attack'],
-        yticklabels=['Legit', 'Attack'],
-        annot_kws={'size': 13}
-    )
-    winner_tag = " 🏆" if name == winner_name else ""
-    ax.set_title(f'{name}{winner_tag}', fontsize=11, fontweight='bold')
-    ax.set_xlabel('Predicted', fontsize=10)
-    ax.set_ylabel('Actual',    fontsize=10)
-
-    tn, fp, fn, tp = cm.ravel()
-    ax.set_xlabel(
-        f'Predicted\nTP={tp:,} FP={fp:,} FN={fn:,} TN={tn:,}',
-        fontsize=9
-    )
-
-plt.suptitle('Confusion Matrices — All 5 Models', fontsize=14,
-             fontweight='bold', y=1.02)
-plt.tight_layout()
-plt.savefig(os.path.join(RESULTS_DIR, 'confusion_matrices.png'),
-            dpi=150, bbox_inches='tight')
-plt.show()
-print("Saved → results/confusion_matrices.png")
+print(f"SVM inference : {svm_time:.4f} ms/sample")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 3 — ROC CURVES (all 5 on one chart)
+# STEP 3 — CONFIDENCE SCORE CALCULATION
 # ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("PLOT 3 — ROC CURVES")
-print("=" * 60)
+print("\n" + "=" * 65)
+print("STEP 3 — CONFIDENCE SCORE CALCULATION")
+print("=" * 65)
+print("""
+  Two confidence measures implemented:
 
-fig, ax = plt.subplots(figsize=(9, 7))
+  1. DISTANCE CONFIDENCE
+     Formula : confidence = |P(attack) - threshold| x 200
+     Range   : 0-100
+     Meaning : how far the prediction is from the decision
+               boundary. Score near 50% = uncertain.
+               Score near 0% or 100% = highly confident.
 
-for name, y_prob in all_y_prob.items():
-    fpr, tpr, _ = roc_curve(y_test, y_prob)
-    roc_auc     = auc(fpr, tpr)
-    lw          = 3 if name == winner_name else 1.5
-    ls          = '-' if name == winner_name else '--'
-    winner_tag  = " 🏆" if name == winner_name else ""
-    ax.plot(fpr, tpr, color=MODEL_COLORS[name],
-            lw=lw, ls=ls,
-            label=f'{name}{winner_tag} (AUC={roc_auc*100:.2f}%)')
+     Examples:
+       P=0.97 -> |0.97-0.5|x200 = 94  (very confident attack)
+       P=0.51 -> |0.51-0.5|x200 =  2  (barely certain - flag for review)
+       P=0.03 -> |0.03-0.5|x200 = 94  (very confident benign)
 
-ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random Classifier')
-ax.set_xlim([0.0, 1.0])
-ax.set_ylim([0.0, 1.02])
-ax.set_xlabel('False Positive Rate', fontsize=13)
-ax.set_ylabel('True Positive Rate',  fontsize=13)
-ax.set_title('ROC Curves — All 5 Models', fontsize=15, fontweight='bold')
-ax.legend(loc='lower right', fontsize=10)
-ax.grid(alpha=0.3)
+  2. ENTROPY CONFIDENCE
+     Formula : entropy = -P*log(P) - (1-P)*log(1-P)
+               confidence = (1 - entropy/log(2)) * 100
+     Range   : 0-100
+     Meaning : how uncertain the model is. Maximum entropy
+               at P=0.5 means 50/50 - model has no idea.
+               Zero entropy means complete certainty.
+""")
 
-plt.tight_layout()
-plt.savefig(os.path.join(ROC_DIR, 'roc_curves.png'), dpi=150)
-plt.show()
-print("Saved → results/roc_curves/roc_curves.png")
+THRESHOLD = 0.5
+eps       = 1e-10  # prevent log(0)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 4 — INFERENCE SPEED vs F1 SCORE
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("PLOT 4 — SPEED vs ACCURACY TRADEOFF")
-print("=" * 60)
+# Distance confidence
+distance_conf = np.abs(svm_prob - THRESHOLD) * 200
+distance_conf = np.clip(distance_conf, 0, 100)
 
-fig, ax = plt.subplots(figsize=(9, 6))
+# Entropy confidence
+p            = np.clip(svm_prob, eps, 1 - eps)
+ent          = -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+entropy_conf = (1 - ent) * 100
+entropy_conf = np.clip(entropy_conf, 0, 100)
 
-for name, r in results.items():
-    x_val  = r['infer_ms'] + 0.0001
-    y_val  = r['f1_score'] * 100
-    color  = MODEL_COLORS[name]
-    marker = '*' if name == winner_name else 'o'
-    size   = 300 if name == winner_name else 150
-
-    ax.scatter(x_val, y_val, color=color,
-               s=size, marker=marker,
-               edgecolors='black', linewidth=1.5,
-               zorder=5, label=name)
-    ax.annotate(
-        name, (x_val, y_val),
-        textcoords='offset points',
-        xytext=(8, 4), fontsize=9
-    )
-
-ax.axvline(x=5.0, color='red', linestyle='--',
-           linewidth=1.5, label='Stage 1 limit (5ms)')
-ax.set_xlabel('Inference Time per Sample (ms)', fontsize=12)
-ax.set_ylabel('F1 Score (%)', fontsize=12)
-ax.set_title('Speed vs Accuracy Tradeoff\n(all models meet Stage 1 <5ms requirement)',
-             fontsize=13, fontweight='bold')
-ax.legend(fontsize=9)
-ax.grid(alpha=0.3)
-
-plt.tight_layout()
-plt.savefig(os.path.join(RESULTS_DIR, 'speed_vs_accuracy.png'), dpi=150)
-plt.show()
-print("Saved → results/speed_vs_accuracy.png")
+print(f"  Confidence stats (distance method):")
+print(f"    Mean   : {distance_conf.mean():.1f}")
+print(f"    Median : {np.median(distance_conf):.1f}")
+print(f"    < 20   : {(distance_conf < 20).sum():,} samples  (uncertain - review)")
+print(f"    >= 80  : {(distance_conf >= 80).sum():,} samples  (high confidence)")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PLOT 5 — CV F1 WITH ERROR BARS
+# STEP 4 — METRICS COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print("PLOT 5 — CROSS VALIDATION F1 WITH ERROR BARS")
-print("=" * 60)
+print("\n" + "=" * 65)
+print("STEP 4 — METRICS COMPUTATION")
+print("=" * 65)
 
-fig, ax = plt.subplots(figsize=(10, 6))
+acc  = accuracy_score (y_test, svm_pred)
+prec = precision_score(y_test, svm_pred, average='macro', zero_division=0)
+rec  = recall_score   (y_test, svm_pred, average='macro', zero_division=0)
+f1   = f1_score       (y_test, svm_pred, average='macro', zero_division=0)
+auc_ = roc_auc_score  (y_test, svm_prob)
+cm   = confusion_matrix(y_test, svm_pred)
+tn, fp, fn, tp = cm.ravel()
 
-names    = list(results.keys())
-cv_f1s   = [results[n]['cv_f1'] * 100    for n in names]
-cv_stds  = [results[n]['cv_f1_std'] * 100 for n in names]
-colors   = [MODEL_COLORS[n] for n in names]
+print(f"\n  Accuracy   : {acc*100:.2f}%")
+print(f"  Precision  : {prec*100:.2f}%  (macro)")
+print(f"  Recall     : {rec*100:.2f}%   (macro)")
+print(f"  F1 Score   : {f1*100:.2f}%   (macro)")
+print(f"  ROC-AUC    : {auc_*100:.2f}%")
+print(f"  Infer/samp : {svm_time:.4f} ms")
+print(f"\n  Confusion Matrix:")
+print(f"    TP={tp:,}  FP={fp:,}")
+print(f"    FN={fn:,}  TN={tn:,}")
+print(f"\n  False Positive Rate : {fp/(fp+tn)*100:.2f}%")
+print(f"  False Negative Rate : {fn/(fn+tp)*100:.2f}%")
 
-bars = ax.bar(names, cv_f1s, color=colors,
-              edgecolor='black', linewidth=0.8, alpha=0.85)
-ax.errorbar(names, cv_f1s, yerr=cv_stds,
-            fmt='none', color='black',
-            capsize=6, capthick=2, elinewidth=2)
-
-for bar, val, std in zip(bars, cv_f1s, cv_stds):
-    ax.text(bar.get_x() + bar.get_width()/2,
-            bar.get_height() + std + 0.05,
-            f'{val:.2f}%\n±{std:.2f}%',
-            ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-winner_idx = names.index(winner_name)
-bars[winner_idx].set_edgecolor('gold')
-bars[winner_idx].set_linewidth(3)
-ax.text(winner_idx, cv_f1s[winner_idx] + cv_stds[winner_idx] + 0.8,
-        '🏆', ha='center', fontsize=16)
-
-ax.set_xlabel('Model', fontsize=12)
-ax.set_ylabel('CV F1 Score (%)', fontsize=12)
-ax.set_title('5-Fold Cross Validation F1 Scores with Standard Deviation',
-             fontsize=13, fontweight='bold')
-ax.set_ylim(93, 101)
-ax.grid(axis='y', alpha=0.3)
-plt.xticks(rotation=15, ha='right')
-
-plt.tight_layout()
-plt.savefig(os.path.join(RESULTS_DIR, 'cv_f1_comparison.png'), dpi=150)
-plt.show()
-print("Saved → results/cv_f1_comparison.png")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PRINT FINAL CLASSIFICATION REPORT FOR WINNER
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "=" * 60)
-print(f"CLASSIFICATION REPORT — {winner_name} (WINNER)")
-print("=" * 60)
-
+print("\n  Classification Report:")
 print(classification_report(
-    y_test,
-    all_y_pred[winner_name],
-    target_names=['Legitimate', 'Attack']
+    y_test, svm_pred,
+    target_names=['Legitimate', 'Attack'],
+    digits=4
 ))
 
-print("\n" + "=" * 60)
-print("ALL PLOTS SAVED")
-print("=" * 60)
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 5 — THRESHOLD ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 65)
+print("STEP 5 — THRESHOLD ANALYSIS")
+print("=" * 65)
 print("""
-results/
-├── metrics_comparison.png     ← bar chart all metrics
-├── confusion_matrices.png     ← all 5 confusion matrices
-├── speed_vs_accuracy.png      ← speed vs F1 tradeoff
-├── cv_f1_comparison.png       ← CV F1 with error bars
-└── roc_curves/
-    └── roc_curves.png         ← all 5 ROC curves
+  Threshold controls how aggressive the SVM probability scorer is.
+  Lower threshold -> more messages flagged as attack
+                  -> higher recall, higher false positive rate
+  Higher threshold -> fewer messages flagged
+                   -> lower recall, lower false positive rate
 """)
-print("Evaluation complete. Stage 1 pipeline finished.")
+
+thresholds = [0.3, 0.4, 0.5, 0.6, 0.7]
+print(f"\n{'Threshold':>10} {'Flagged':>9} {'Acc':>7} {'Recall':>8} "
+      f"{'Precision':>10} {'F1':>7} {'FPR':>7}")
+print("-" * 70)
+
+thresh_results = []
+for t in thresholds:
+    t_pred = (svm_prob >= t).astype(int)
+    t_cm   = confusion_matrix(y_test, t_pred)
+    t_tn, t_fp, t_fn, t_tp = t_cm.ravel()
+
+    t_acc  = accuracy_score (y_test, t_pred)
+    t_rec  = recall_score   (y_test, t_pred, average='macro', zero_division=0)
+    t_prec = precision_score(y_test, t_pred, average='macro', zero_division=0)
+    t_f1   = f1_score       (y_test, t_pred, average='macro', zero_division=0)
+    t_fpr  = t_fp / (t_fp + t_tn) if (t_fp + t_tn) > 0 else 0
+    flagged = t_pred.sum()
+
+    thresh_results.append({
+        'threshold': t, 'f1': t_f1, 'recall': t_rec,
+        'precision': t_prec, 'fpr': t_fpr
+    })
+
+    mark = " <-recommended" if t == THRESHOLD else ""
+    print(f"{t:>10.1f} {flagged:>9,} {t_acc*100:>6.2f}% "
+          f"{t_rec*100:>7.2f}% {t_prec*100:>9.2f}% "
+          f"{t_f1*100:>6.2f}% {t_fpr*100:>6.2f}%{mark}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 6 — PLOTS
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 65)
+print("STEP 6 — GENERATING PLOTS")
+print("=" * 65)
+
+fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+fig.suptitle('SVM — Social Engineering Detection Evaluation',
+             fontsize=16, fontweight='bold', y=1.01)
+
+# ── Plot 1: Probability distribution ─────────────────────────────────────────
+ax = axes[0, 0]
+ax.hist(svm_prob[y_test == 0], bins=50, alpha=0.6, color='#3b82f6',
+        label='Legitimate', density=True)
+ax.hist(svm_prob[y_test == 1], bins=50, alpha=0.6, color='#ef4444',
+        label='Attack',     density=True)
+ax.axvline(x=THRESHOLD, color='black', linestyle='--',
+           linewidth=1.5, label=f'Threshold ({THRESHOLD})')
+ax.set_title('Predicted Probability Distribution', fontweight='bold')
+ax.set_xlabel('P(Attack)')
+ax.set_ylabel('Density')
+ax.legend()
+ax.grid(alpha=0.3)
+
+# ── Plot 2: Risk score bands ──────────────────────────────────────────────────
+ax    = axes[0, 1]
+score = svm_prob * 100
+bands = {
+    'Low\n(0-25)'      : (score < 25).sum(),
+    'Medium\n(25-50)'  : ((score >= 25) & (score < 50)).sum(),
+    'High\n(50-75)'    : ((score >= 50) & (score < 75)).sum(),
+    'Critical\n(75-100)': (score >= 75).sum(),
+}
+colors = ['#22c55e', '#eab308', '#f97316', '#ef4444']
+bars   = ax.bar(bands.keys(), bands.values(), color=colors,
+                edgecolor='black', linewidth=0.8)
+for bar, val in zip(bars, bands.values()):
+    ax.text(bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 50,
+            f'{val:,}', ha='center', fontsize=9, fontweight='bold')
+ax.set_title('Risk Score Band Distribution', fontweight='bold')
+ax.set_ylabel('Sample Count')
+ax.grid(axis='y', alpha=0.3)
+
+# ── Plot 3: ROC curve ─────────────────────────────────────────────────────────
+ax             = axes[0, 2]
+fpr_c, tpr_c, _ = roc_curve(y_test, svm_prob)
+auc_c          = auc(fpr_c, tpr_c)
+ax.plot(fpr_c, tpr_c, color='#3b82f6', lw=2,
+        label=f'SVM (AUC = {auc_c:.4f})')
+ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random')
+ax.set_title('ROC Curve', fontweight='bold')
+ax.set_xlabel('False Positive Rate')
+ax.set_ylabel('True Positive Rate')
+ax.legend()
+ax.grid(alpha=0.3)
+
+# ── Plot 4: Confidence distribution ──────────────────────────────────────────
+ax = axes[1, 0]
+ax.hist(distance_conf[y_test == 1], bins=50, alpha=0.6,
+        color='#ef4444', label='Attack',     density=True)
+ax.hist(distance_conf[y_test == 0], bins=50, alpha=0.6,
+        color='#3b82f6', label='Legitimate', density=True)
+ax.axvline(x=20, color='orange', linestyle='--',
+           linewidth=1.5, label='Low confidence (<20)')
+ax.set_title('Confidence Score Distribution\n|P - threshold| x 200',
+             fontweight='bold')
+ax.set_xlabel('Confidence Score (0-100)')
+ax.set_ylabel('Density')
+ax.legend()
+ax.grid(alpha=0.3)
+
+# ── Plot 5: Threshold analysis ────────────────────────────────────────────────
+ax      = axes[1, 1]
+t_vals  = [r['threshold']    for r in thresh_results]
+f1_vals = [r['f1'] * 100     for r in thresh_results]
+rc_vals = [r['recall'] * 100 for r in thresh_results]
+pr_vals = [r['precision'] * 100 for r in thresh_results]
+ax.plot(t_vals, f1_vals, 'o-', color='#8b5cf6', lw=2, label='F1')
+ax.plot(t_vals, rc_vals, 's-', color='#ef4444', lw=2, label='Recall')
+ax.plot(t_vals, pr_vals, '^-', color='#3b82f6', lw=2, label='Precision')
+ax.axvline(x=THRESHOLD, color='black', linestyle='--',
+           linewidth=1.5, label=f'Chosen ({THRESHOLD})')
+ax.set_title('Threshold Analysis', fontweight='bold')
+ax.set_xlabel('Threshold')
+ax.set_ylabel('Score (%)')
+ax.legend()
+ax.grid(alpha=0.3)
+
+# ── Plot 6: Confusion matrix ──────────────────────────────────────────────────
+ax = axes[1, 2]
+sns.heatmap(cm, annot=True, fmt='d', ax=ax, cmap='Blues',
+            xticklabels=['Legit', 'Attack'],
+            yticklabels=['Legit', 'Attack'],
+            annot_kws={'size': 13})
+ax.set_title('Confusion Matrix — SVM', fontweight='bold')
+ax.set_xlabel('Predicted')
+ax.set_ylabel('Actual')
+
+plt.tight_layout()
+out_path = os.path.join(RESULTS_DIR, 'svm', 'svm_evaluation.png')
+plt.savefig(out_path, dpi=150, bbox_inches='tight')
+print(f"Saved -> results/svm/svm_evaluation.png")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 7 — FINAL SUMMARY
+# ═══════════════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 65)
+print("STEP 7 — FINAL SUMMARY")
+print("=" * 65)
+print(f"""
+  SVM — LinearSVC Baseline
+
+    Accuracy   : {acc*100:.2f}%
+    Precision  : {prec*100:.2f}%  (macro)
+    Recall     : {rec*100:.2f}%   (macro)
+    F1 Score   : {f1*100:.2f}%   (macro)
+    ROC-AUC    : {auc_*100:.2f}%
+    Speed      : {svm_time:.4f} ms/sample
+
+    Confusion Matrix:
+      TP={tp:,}  FP={fp:,}
+      FN={fn:,}  TN={tn:,}
+      FPR : {fp/(fp+tn)*100:.2f}%
+      FNR : {fn/(fn+tp)*100:.2f}%
+
+  Confidence scoring : |P - 0.5| x 200
+  Risk bands         : Low(0-25)  Medium(25-50)  High(50-75)  Critical(75-100)
+  Recommended threshold : {THRESHOLD}
+""")
+
+# ── Save evaluation summary ───────────────────────────────────────────────────
+joblib.dump({
+    'svm_pred'      : svm_pred,
+    'svm_prob'      : svm_prob,
+    'distance_conf' : distance_conf,
+    'entropy_conf'  : entropy_conf,
+    'y_test'        : y_test,
+    'threshold'     : THRESHOLD,
+    'metrics'       : {
+        'accuracy'  : acc,
+        'precision' : prec,
+        'recall'    : rec,
+        'f1_score'  : f1,
+        'roc_auc'   : auc_,
+        'infer_ms'  : svm_time,
+    },
+}, os.path.join(MODELS_DIR, 'svm_evaluation_summary.pkl'))
+
+print("Saved -> models/svm_evaluation_summary.pkl")
+print("\nEvaluation complete.")
