@@ -193,13 +193,12 @@ HYPOTHESIS_TEMPLATES: dict[str, str] = {
     "audit to manipulate the recipient into compliance."
     ),
 
-    # Unique anchors: "enter their password", "login form", "website"
-    # Distinct from phishing: this one sends users to a credential-capture form;
-    # phishing primarily threatens account suspension via a suspicious link.
+    # Unique anchors: "share", "password", "username", "one-time code"
+    # Mechanism = the ASK itself. No impersonation requirement — peer,
+    # colleague, stranger, or authority: requesting credentials is the attack.
     "credential_harvesting": (
-    "The sender is requesting the recipient's login credentials, "
-    "account details, passwords, PIN, OTP, or banking information "
-    "by impersonating a legitimate service, bank, or authority."
+        "The sender asks the recipient to share or send their password, "
+        "username, login details, account access, PIN, or one-time code."
     ),
 
     # Unique anchors: "won a prize", "gift card", "claim"

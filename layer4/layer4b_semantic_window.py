@@ -34,11 +34,31 @@ Phase 2 wiring
 --------------
 Same as Layer 4a — only the storage backend changes. The detect() interface
 and output contract are stable and can be consumed by any dashboard.
+
+ENTITY RISK FORMULA (Problem 2 fix)
+------------------------------------
+The old base was a flat layer2_risk-weighted average of attack-message
+confidences. In escalating conversations (Arjun script: small talk →
+pressure → explicit credential request), later low-confidence attack
+messages dragged the average DOWN — risk fell from 57 to 42 while the
+conversation got objectively more dangerous, and never reached HIGH.
+
+New base = blend of:
+  * RECENCY-WEIGHTED average — each later attack message weighs
+    RECENCY_GROWTH× more than the previous one, so the most recent
+    (typically most explicit) message dominates the score.
+  * PEAK confidence — once a high-confidence attack message has been
+    seen, subsequent low-confidence noise cannot erase it. Risk is
+    monotone-friendly: it can plateau, but it does not collapse.
+
+base = ((1 - PEAK_BLEND) * recency_avg + PEAK_BLEND * peak) * 100
+Pattern bonus and count bonus are unchanged.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -65,6 +85,11 @@ ESCALATION_MIN_RISE       = 0.20  # min confidence rise across window to flag
 DELAYED_EXEC_MIN_MINS     = 30    # minutes gap that triggers delayed_execution flag
 BEC_SEQUENCE_LABELS       = {"pretexting", "spear_phishing", "business_email_compromise"}
 MULTI_VECTOR_MIN_TYPES    = 3     # distinct attack types to flag multi_vector
+
+# Entity risk formula config (Problem 2 fix)
+RECENCY_GROWTH = 1.25   # each later attack msg weighs 25% more than previous
+PEAK_BLEND     = 0.45   # fraction of base taken from peak confidence
+                        # 0.0 = pure recency average, 1.0 = pure peak hold
 
 
 # ---------------------------------------------------------------------------
@@ -325,21 +350,44 @@ class SemanticWindow:
         """
         Compute entity-level risk score 0–100.
 
-        Formula:
-          base  = weighted average confidence of attack messages × 100
+        Formula (Problem 2 fix):
+          base  = blend of recency-weighted confidence average and peak
+                  confidence of attack messages × 100
           bonus = pattern severity bonus
           count = logarithmic bonus for number of attack messages
+
+        Recency weighting: slot i weight = max(layer2_risk, 1) × RECENCY_GROWTH^i
+          → the latest attack message dominates; an escalating conversation
+            escalates instead of averaging out.
+        Peak blending: PEAK_BLEND fraction of base comes from the highest
+          confidence ever seen in the window → later low-confidence messages
+          can plateau the score but never collapse it.
         """
         attack_slots = [s for s in slots if s.label != "benign"]
         if not attack_slots:
             return 0
 
-        # Base: weighted confidence average (weight by layer2_risk)
-        total_weight = sum(max(s.layer2_risk, 1) for s in attack_slots)
-        weighted_sum = sum(
-            s.confidence * s.layer2_risk for s in attack_slots
+        def _eff_conf(s: MessageSlot) -> float:
+            # Blend NLI confidence with L2 calibrated probability.
+            # When two independent models agree (NLI high + LR high),
+            # effective confidence rises. When they disagree (NLI low
+            # but LR high — as in split-softmax cases like Rajesh where
+            # mass spreads across pretexting + credential_harvesting),
+            # L2 provides a floor so the score reflects true threat level.
+            l2 = max(s.layer2_risk, 0) / 100.0
+            return max(s.confidence, 0.5 * (s.confidence + l2))
+
+        # Base: recency-weighted effective-confidence average blended with peak
+        weights = [
+            max(s.layer2_risk, 1) * (RECENCY_GROWTH ** i)
+            for i, s in enumerate(attack_slots)
+        ]
+        recency_avg = (
+            sum(w * _eff_conf(s) for w, s in zip(weights, attack_slots))
+            / sum(weights)
         )
-        base = (weighted_sum / total_weight) * 100
+        peak = max(_eff_conf(s) for s in attack_slots)
+        base = ((1.0 - PEAK_BLEND) * recency_avg + PEAK_BLEND * peak) * 100
 
         # Pattern severity bonus
         pattern_bonus = {
@@ -353,7 +401,6 @@ class SemanticWindow:
         }.get(pattern, 0)
 
         # Count bonus: more attack messages = higher risk
-        import math
         count_bonus = min(10, math.log(len(attack_slots) + 1, 2) * 4)
 
         return min(100, int(base + pattern_bonus + count_bonus))

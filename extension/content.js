@@ -26,11 +26,23 @@ function detectClient() {
 // ────────────────────────────────────────────────────────────────────────────
 // GMAIL
 // ────────────────────────────────────────────────────────────────────────────
+/** djb2 hash — same scheme as WhatsApp conv_id. Safe for any unicode. */
+function djb2Hash(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h) ^ str.charCodeAt(i);
+    h = h >>> 0;  // keep unsigned 32-bit
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 function gmailThreadId() {
-  const match = window.location.hash.match(/#[a-z]+\/([a-f0-9]+)$/);
-  if (match) return `gmail_${match[1]}`;
+  // Gmail thread IDs are mixed-case alphanumeric (e.g. FMfcgzQgMMJT…)
+  const match = window.location.hash.match(/#[a-z]+\/([A-Za-z0-9_-]+)$/);
+  if (match) return `gmail_${match[1].slice(0, 24)}`;
+  // Fallback: hash subject — btoa REMOVED, throws on non-Latin1 subjects
   const subject = document.querySelector("h2.hP");
-  if (subject) return `gmail_subj_${btoa(subject.innerText).slice(0, 16)}`;
+  if (subject) return `gmail_subj_${djb2Hash(subject.innerText)}`;
   return `gmail_${Date.now()}`;
 }
 

@@ -12,10 +12,25 @@ This is the Phase 2 cross-platform link:
   WA Web     "John Smith"             → entity_a3f9b2c1   ← SAME WINDOW
 
 Requires permission: System Preferences → Privacy & Security → Contacts
+NOTE: permission is granted PER-APP — the app that runs the server
+(Terminal / iTerm) must itself be authorized, not just Python.
 
 Falls back gracefully at every level:
   Contacts lookup fails → hash the name/email directly
   No name/email        → platform-specific ID (isolated window, no cross-link)
+
+BUGFIX (pyobjc NSError** out-parameter)
+----------------------------------------
+`unifiedContactsMatchingPredicate_keysToFetch_error_` declares an
+`NSError**` out-parameter. pyobjc surfaces such methods by returning a
+TUPLE `(result_array, error)` — not the bare array. The previous code did
+`contacts.extend(result or [])`, which extended the list with the tuple's
+elements (the NSArray itself + the error object). The subsequent
+`contact.emailAddresses()` call then ran on an NSArray, raised
+AttributeError, was swallowed by the broad `except`, and the function
+silently returned None — so name-based lookup NEVER resolved and every
+WhatsApp/Messages sender fell back to a name-hash entity_id, breaking
+cross-platform window merging. Fixed by unpacking the tuple before use.
 """
 
 from __future__ import annotations
@@ -93,6 +108,19 @@ def resolve(
 
 # ── Contacts lookup ───────────────────────────────────────────────────────────
 
+def _unpack_objc_result(result):
+    """
+    pyobjc returns (value, error) tuples for ObjC methods with NSError**
+    out-parameters. Normalise to (value, error) regardless of pyobjc
+    version behaviour.
+    """
+    if isinstance(result, tuple):
+        if len(result) == 2:
+            return result[0], result[1]
+        return (result[0] if result else None), None
+    return result, None
+
+
 @lru_cache(maxsize=256)
 def _lookup_canonical(
     name:  Optional[str] = None,
@@ -104,6 +132,8 @@ def _lookup_canonical(
 
     Results are cached — same name always resolves to the same email
     within a session without re-querying Contacts.
+    NOTE: cache means the SERVER MUST BE RESTARTED after editing a
+    contact card for the change to take effect.
     """
     try:
         from Contacts import (
@@ -133,11 +163,15 @@ def _lookup_canonical(
         # Search by name
         if name:
             predicate = CNContact.predicateForContactsMatchingName_(name.strip())
-            err_ref = None
             result = store.unifiedContactsMatchingPredicate_keysToFetch_error_(
                 predicate, keys, None
             )
-            contacts.extend(result or [])
+            # pyobjc returns (NSArray, NSError) for NSError** out-params
+            found, err = _unpack_objc_result(result)
+            if err:
+                logger.debug("Contacts name query error: %s", err)
+            if found:
+                contacts.extend(found)
 
         # Search by phone number
         if phone and not contacts:
@@ -148,7 +182,11 @@ def _lookup_canonical(
             result = store.unifiedContactsMatchingPredicate_keysToFetch_error_(
                 predicate, keys, None
             )
-            contacts.extend(result or [])
+            found, err = _unpack_objc_result(result)
+            if err:
+                logger.debug("Contacts phone query error: %s", err)
+            if found:
+                contacts.extend(found)
 
         # Return first email found
         for contact in contacts:
